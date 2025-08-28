@@ -181,6 +181,12 @@ class ExtendedTimeStepWrapper(dm_env.Environment):
 
 
 def make(name, frame_stack, action_repeat, seed):
+    '''
+    name: 环境名称
+    frame_stack: 帧堆叠数
+    action_repeat: 动作重复次数
+    seed: 随机种子
+    '''
     domain, task = name.split('_', 1)
     # overwrite cup to ball_in_cup
     domain = dict(cup='ball_in_cup').get(domain, domain)
