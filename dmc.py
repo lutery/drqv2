@@ -149,6 +149,9 @@ class ActionDTypeWrapper(dm_env.Environment):
 
 
 class ExtendedTimeStepWrapper(dm_env.Environment):
+    '''
+    将原始的时间步添加 action 字段，使每个时间步都包含完整的状态-动作-奖励信息
+    '''
     def __init__(self, env):
         self._env = env
 
@@ -174,6 +177,24 @@ class ExtendedTimeStepWrapper(dm_env.Environment):
         return self._env.observation_spec()
 
     def action_spec(self):
+        '''
+        返回的是动作空间的规格信息，例如：
+        shape - 动作向量的形状
+
+        例如：(6,) 表示6维动作向量（如6个关节的角度）
+        dtype - 数据类型
+
+        例如：np.float32 或 np.float64
+        minimum - 每个动作维度的最小值
+
+        例如：[-1.0, -1.0, -1.0, -1.0, -1.0, -1.0]
+        maximum - 每个动作维度的最大值
+
+        例如：[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        name - 规范名称
+
+        例如：'action'
+        '''
         return self._env.action_spec()
 
     def __getattr__(self, name):
@@ -189,6 +210,9 @@ def make(name, frame_stack, action_repeat, seed):
     '''
     domain, task = name.split('_', 1)
     # overwrite cup to ball_in_cup
+    # dict(cup='ball_in_cup') - 创建一个字典 {'cup': 'ball_in_cup'}
+    # .get(domain, domain) - 调用字典的 get 方法
+    # 如果传入的 domain 存在于字典中，则返回对应的值 'ball_in_cup'
     domain = dict(cup='ball_in_cup').get(domain, domain)
     # make sure reward is not visualized
     if (domain, task) in suite.ALL_TASKS:
@@ -202,18 +226,21 @@ def make(name, frame_stack, action_repeat, seed):
         env = manipulation.load(name, seed=seed)
         pixels_key = 'front_close'
     # add wrappers
+    # 将动作转换为float32
     env = ActionDTypeWrapper(env, np.float32)
+    # 动作重复，相当于跳帧
     env = ActionRepeatWrapper(env, action_repeat)
+    # 将动作归一化到[-1, 1]
     env = action_scale.Wrapper(env, minimum=-1.0, maximum=+1.0)
     # add renderings for clasical tasks
     if (domain, task) in suite.ALL_TASKS:
         # zoom in camera for quadruped
-        camera_id = dict(quadruped=2).get(domain, 0)
-        render_kwargs = dict(height=84, width=84, camera_id=camera_id)
+        camera_id = dict(quadruped=2).get(domain, 0) # 默认使用摄像头0，四足机器人使用摄像头2
+        render_kwargs = dict(height=84, width=84, camera_id=camera_id) # 设置渲染参数，这里可以看出来渲染的图像大小是84x84
         env = pixels.Wrapper(env,
                              pixels_only=True,
-                             render_kwargs=render_kwargs)
+                             render_kwargs=render_kwargs) # 将环境的渲染图像作为观测的一部分
     # stack several frames
-    env = FrameStackWrapper(env, frame_stack, pixels_key)
-    env = ExtendedTimeStepWrapper(env)
+    env = FrameStackWrapper(env, frame_stack, pixels_key) # 帧堆叠
+    env = ExtendedTimeStepWrapper(env) # 扩展时间步
     return env
