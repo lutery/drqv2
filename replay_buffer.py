@@ -20,11 +20,15 @@ def episode_len(episode):
 
 
 def save_episode(episode, fn):
+    '''
+    episode: 包含一个完整游戏过程的数据，包含观察、动作、奖励、折扣等，是一个字典数据类型
+    fn: 游戏存储的文件路径
+    '''
     with io.BytesIO() as bs:
-        np.savez_compressed(bs, **episode)
+        np.savez_compressed(bs, **episode) # 将数据先压缩保存到内存中
         bs.seek(0)
         with fn.open('wb') as f:
-            f.write(bs.read())
+            f.write(bs.read()) # 然后将数据写入到文件中
 
 
 def load_episode(fn):
@@ -35,33 +39,54 @@ def load_episode(fn):
 
 
 class ReplayBufferStorage:
+    '''
+    重放缓冲区，负责存储和管理采集的数据，按连续的episode存储
+    '''
+
     def __init__(self, data_specs, replay_dir):
+        '''
+        data_specs:
+                # create replay buffer
+                (self.train_env.observation_spec(),
+                self.train_env.action_spec(),
+                specs.Array((1,), np.float32, 'reward'),
+                specs.Array((1,), np.float32, 'discount'))
+        '''
         self._data_specs = data_specs
         self._replay_dir = replay_dir
         replay_dir.mkdir(exist_ok=True)
+        # 存储采集的数据
+        # 外层是一个字典，键是数据的名称，值是一个列表，存储该名称对应的数据
+        # 列表存储的都是numpy数组，向量
         self._current_episode = defaultdict(list)
         self._preload()
 
     def __len__(self):
-        return self._num_transitions
+        return self._num_transitions # 返回已经存储的总采集数据量
 
     def add(self, time_step):
+        # 遍历所有环境的数据规格
         for spec in self._data_specs:
+            # 提取对应的数据
             value = time_step[spec.name]
             if np.isscalar(value):
+                # 如果是标量，则转换为数组
                 value = np.full(spec.shape, value, spec.dtype)
             assert spec.shape == value.shape and spec.dtype == value.dtype
+            # 将数据添加到当前的episode中
             self._current_episode[spec.name].append(value)
         if time_step.last():
+            # 如果是最后一个时间步，则将当前的episode存储到文件中
+            # 外层是一个字典，内层是一个numpy array
             episode = dict()
             for spec in self._data_specs:
                 value = self._current_episode[spec.name]
                 episode[spec.name] = np.array(value, spec.dtype)
-            self._current_episode = defaultdict(list)
-            self._store_episode(episode)
+            self._current_episode = defaultdict(list) # 重置当前的episode
+            self._store_episode(episode) # 将episode存储到文件中
 
     def _preload(self):
-        self._num_episodes = 0
+        self._num_episodes = 0 # 记录已经存储的episode数量
         self._num_transitions = 0
         for fn in self._replay_dir.glob('*.npz'):
             _, _, eps_len = fn.stem.split('_')
@@ -69,18 +94,30 @@ class ReplayBufferStorage:
             self._num_transitions += int(eps_len)
 
     def _store_episode(self, episode):
+        '''
+        episode: 包含一个完整游戏过程的数据，包含观察、动作、奖励、折扣等，是一个字典数据类型
+        '''
         eps_idx = self._num_episodes
-        eps_len = episode_len(episode)
-        self._num_episodes += 1
+        eps_len = episode_len(episode) # 计算episode的长度
+        self._num_episodes += 1 # 更新episode数量
         self._num_transitions += eps_len
-        ts = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
-        eps_fn = f'{ts}_{eps_idx}_{eps_len}.npz'
+        ts = datetime.datetime.now().strftime('%Y%m%dT%H%M%S') # 获取当前时间
+        eps_fn = f'{ts}_{eps_idx}_{eps_len}.npz' # 构造文件名，看起来是每一个episode一个文件
         save_episode(episode, self._replay_dir / eps_fn)
 
 
 class ReplayBuffer(IterableDataset):
     def __init__(self, replay_dir, max_size, num_workers, nstep, discount,
                  fetch_every, save_snapshot):
+        '''
+        replay_dir: 重放缓冲区的存储路径
+        max_size: 重放缓冲区的最大容量
+        num_workers: 用于数据加载的工作线程数量
+        nstep: 多步回报的步数
+        discount: 折扣因子
+        fetch_every: 每隔多少次采样尝试从存储目录中获取新的数据
+        save_snapshot: 是否保存采集的原始数据文件
+        '''
         self._replay_dir = replay_dir
         self._size = 0
         self._max_size = max_size
@@ -172,6 +209,24 @@ def _worker_init_fn(worker_id):
 
 def make_replay_loader(replay_dir, max_size, batch_size, num_workers,
                        save_snapshot, nstep, discount):
+    '''
+    todo 
+
+    replay_dir: 重放缓冲区的存储路径
+    max_size: 重放缓冲区的最大容量
+    batch_size: 每个批次的样本数量
+    num_workers: 用于数据加载的工作线程数量
+    save_snapshot: 是否保存采集的原始数据文件
+    nstep: 多步回报的步数
+    discount: 折扣因子
+    该函数创建并返回一个数据加载器，用于从重放缓冲区中采样数据
+    该数据加载器是一个可迭代对象，可以在训练过程中使用
+    该数据加载器会自动处理多线程数据加载和随机采样
+    该数据加载器会定期从重放缓冲区中获取新的数据
+    该数据加载器会根据指定的nstep和discount计算多步回报
+    该数据加载器会返回一个批次的数据，包含观察、动作、奖励、折扣和下一个观察
+    该数据加载器适用于强化学习中的经验回放
+    '''
     max_size_per_worker = max_size // max(1, num_workers)
 
     iterable = ReplayBuffer(replay_dir,
@@ -185,6 +240,6 @@ def make_replay_loader(replay_dir, max_size, batch_size, num_workers,
     loader = torch.utils.data.DataLoader(iterable,
                                          batch_size=batch_size,
                                          num_workers=num_workers,
-                                         pin_memory=True,
-                                         worker_init_fn=_worker_init_fn)
+                                         pin_memory=True, # 将数据固定在内存中，加速从 CPU 到 GPU 的数据传输。因为有可能因为分页内存地址数据存储到硬盘中
+                                         worker_init_fn=_worker_init_fn) # 为每个数据加载工作线程设置独立的随机种子，确保多线程采样的随机性
     return loader

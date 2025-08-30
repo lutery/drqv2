@@ -157,11 +157,20 @@ class Logger(object):
             self._train_mg.dump(step, 'train')
 
     def log_and_dump_ctx(self, step, ty):
+        '''
+        step: 当前的训练帧数
+        ty: 'train' or 'eval'
+        '''
         return LogAndDumpCtx(self, step, ty)
 
 
 class LogAndDumpCtx:
     def __init__(self, logger, step, ty):
+        '''
+        logger: Logger 对象 日志记录
+        step: 当前的训练帧数
+        ty: 'train' or 'eval'
+        '''
         self._logger = logger
         self._step = step
         self._ty = ty

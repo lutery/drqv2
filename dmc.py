@@ -242,5 +242,5 @@ def make(name, frame_stack, action_repeat, seed):
                              render_kwargs=render_kwargs) # 将环境的渲染图像作为观测的一部分
     # stack several frames
     env = FrameStackWrapper(env, frame_stack, pixels_key) # 帧堆叠
-    env = ExtendedTimeStepWrapper(env) # 扩展时间步
+    env = ExtendedTimeStepWrapper(env) # 扩展返回的信息，增加包含执行的step动作
     return env

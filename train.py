@@ -26,9 +26,14 @@ torch.backends.cudnn.benchmark = True
 
 
 def make_agent(obs_spec, action_spec, cfg):
+    '''
+    obs_spec: 环境的观察空间规格
+    action_spec: 环境的动作空间规格
+    cfg: agent 的配置参数
+    '''
     cfg.obs_shape = obs_spec.shape
     cfg.action_shape = action_spec.shape
-    return hydra.utils.instantiate(cfg)
+    return hydra.utils.instantiate(cfg) # drqv2.DrQV2Agent
 
 
 class Workspace:
@@ -46,7 +51,7 @@ class Workspace:
                                 self.cfg.agent)
         self.timer = utils.Timer()
         self._global_step = 0
-        self._global_episode = 0
+        self._global_episode = 0 # 记录训练了多少个完整的游戏过程
 
     def setup(self):
         # create logger
@@ -62,6 +67,7 @@ class Workspace:
                       specs.Array((1,), np.float32, 'reward'),
                       specs.Array((1,), np.float32, 'discount'))
 
+        # 构建重放缓冲区
         self.replay_storage = ReplayBufferStorage(data_specs,
                                                   self.work_dir / 'buffer')
 
@@ -71,8 +77,10 @@ class Workspace:
             self.cfg.save_snapshot, self.cfg.nstep, self.cfg.discount)
         self._replay_iter = None
 
+        # 构建视频记录器
         self.video_recorder = VideoRecorder(
             self.work_dir if self.cfg.save_video else None)
+        # 记录训练过程中的视频
         self.train_video_recorder = TrainVideoRecorder(
             self.work_dir if self.cfg.save_train_video else None)
 
@@ -87,6 +95,9 @@ class Workspace:
 
     @property
     def global_frame(self):
+        '''
+        返回游戏经过的总帧数
+        '''
         return self.global_step * self.cfg.action_repeat
 
     @property
@@ -97,6 +108,7 @@ class Workspace:
 
     def eval(self):
         step, episode, total_reward = 0, 0, 0
+        # self.cfg.num_eval_episodes： 评估时进行多少个完整的游戏过程
         eval_until_episode = utils.Until(self.cfg.num_eval_episodes)
 
         while eval_until_episode(episode):
@@ -122,30 +134,37 @@ class Workspace:
             log('step', self.global_step)
 
     def train(self):
-        # predicates
-        train_until_step = utils.Until(self.cfg.num_train_frames,
+        '''
+        开始进行训练
+        '''
+        # predicates todo 这是做啥的？
+        train_until_step = utils.Until(self.cfg.num_train_frames, # 总训练帧数 作用: 控制整个训练过程的总长度
                                        self.cfg.action_repeat)
-        seed_until_step = utils.Until(self.cfg.num_seed_frames,
+        seed_until_step = utils.Until(self.cfg.num_seed_frames, # 随机探索帧数 作用: 在训练初期进行纯随机探索，收集初始经验
                                       self.cfg.action_repeat)
-        eval_every_step = utils.Every(self.cfg.eval_every_frames,
+        eval_every_step = utils.Every(self.cfg.eval_every_frames, # 评估频率 作用: 控制多久进行一次模型评估
                                       self.cfg.action_repeat)
 
-        episode_step, episode_reward = 0, 0
+        episode_step, episode_reward = 0, 0 # episode_step 记录当前游戏过程的步数，episode_reward 记录当前游戏过程的总奖励
         time_step = self.train_env.reset()
         self.replay_storage.add(time_step)
         self.train_video_recorder.init(time_step.observation)
         metrics = None
-        while train_until_step(self.global_step):
-            if time_step.last():
+        while train_until_step(self.global_step): # 限制在总训练帧数内
+            if time_step.last(): 
+                # 判断当前时间步是否为一个游戏生命周期的结束
                 self._global_episode += 1
-                self.train_video_recorder.save(f'{self.global_frame}.mp4')
+                self.train_video_recorder.save(f'{self.global_frame}.mp4') # 如果本轮游戏结束，保存训练视频
                 # wait until all the metrics schema is populated
                 if metrics is not None:
-                    # log stats
+                    # log stats 
+                    # elapsed_time - 从上次记录到现在经过的时间
+                    # total_time - 从训练开始到现在的总时间
                     elapsed_time, total_time = self.timer.reset()
-                    episode_frame = episode_step * self.cfg.action_repeat
+                    episode_frame = episode_step * self.cfg.action_repeat # 当前游戏过程的总帧数，因为每个动作会被重复执行多次，也会经过多帧渲染
                     with self.logger.log_and_dump_ctx(self.global_frame,
                                                       ty='train') as log:
+                        # 记录本轮训练的各种指标
                         log('fps', episode_frame / elapsed_time)
                         log('total_time', total_time)
                         log('episode_reward', episode_reward)
@@ -155,19 +174,21 @@ class Workspace:
                         log('step', self.global_step)
 
                 # reset env
-                time_step = self.train_env.reset()
-                self.replay_storage.add(time_step)
-                self.train_video_recorder.init(time_step.observation)
+                time_step = self.train_env.reset() # 重置环境，开始新的游戏过程
+                self.replay_storage.add(time_step) # 将重置后的初始时间步添加到重放缓冲区
+                self.train_video_recorder.init(time_step.observation) # 初始化训练视频记录器
                 # try to save snapshot
                 if self.cfg.save_snapshot:
+                    # 是否保存训练状态的快照
                     self.save_snapshot()
-                episode_step = 0
-                episode_reward = 0
+                episode_step = 0 # 重置当前游戏过程的步数
+                episode_reward = 0 # 重置当前游戏过程的总奖励
 
             # try to evaluate
             if eval_every_step(self.global_step):
                 self.logger.log('eval_total_time', self.timer.total_time(),
                                 self.global_frame)
+                # 验证模型
                 self.eval()
 
             # sample action
@@ -190,8 +211,11 @@ class Workspace:
             self._global_step += 1
 
     def save_snapshot(self):
+        # 创建训练状态的快照文件
         snapshot = self.work_dir / 'snapshot.pt'
+        # 记录要保存的成员变量
         keys_to_save = ['agent', 'timer', '_global_step', '_global_episode']
+        # 获取要保存的成员变量的值，并保存到文件中
         payload = {k: self.__dict__[k] for k in keys_to_save}
         with snapshot.open('wb') as f:
             torch.save(payload, f)
@@ -199,8 +223,8 @@ class Workspace:
     def load_snapshot(self):
         snapshot = self.work_dir / 'snapshot.pt'
         with snapshot.open('rb') as f:
-            payload = torch.load(f)
-        for k, v in payload.items():
+            payload = torch.load(f) # 加载保存的训练状态
+        for k, v in payload.items(): # 并将数据恢复到当前的训练状态中
             self.__dict__[k] = v
 
 
@@ -209,7 +233,7 @@ def main(cfg):
     from train import Workspace as W
     root_dir = Path.cwd()
     workspace = W(cfg)
-    snapshot = root_dir / 'snapshot.pt'
+    snapshot = root_dir / 'snapshot.pt' # 恢复训练
     if snapshot.exists():
         print(f'resuming: {snapshot}')
         workspace.load_snapshot()

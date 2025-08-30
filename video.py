@@ -9,14 +9,18 @@ import numpy as np
 
 class VideoRecorder:
     def __init__(self, root_dir, render_size=256, fps=20):
+        '''
+        root_dir: 视频存储的根目录
+        '''
+        # 构建存储目录
         if root_dir is not None:
             self.save_dir = root_dir / 'eval_video'
             self.save_dir.mkdir(exist_ok=True)
         else:
             self.save_dir = None
 
-        self.render_size = render_size
-        self.fps = fps
+        self.render_size = render_size # 渲染图像的尺寸
+        self.fps = fps # 视频的帧率
         self.frames = []
 
     def init(self, env, enabled=True):

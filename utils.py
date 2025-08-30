@@ -50,8 +50,14 @@ def to_torch(xs, device):
 
 
 def weight_init(m):
+    '''
+    权重初始化
+
+    偏置设置为0
+    权重设置为 
+    '''
     if isinstance(m, nn.Linear):
-        nn.init.orthogonal_(m.weight.data)
+        nn.init.orthogonal_(m.weight.data) # 创建正交矩阵来初始化神经网络的权重
         if hasattr(m.bias, 'data'):
             m.bias.data.fill_(0.0)
     elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
@@ -67,10 +73,12 @@ class Until:
         self._action_repeat = action_repeat
 
     def __call__(self, step):
+        # 如果self._until为None，表示没有限制，总是返回True
         if self._until is None:
             return True
+        # 将总的时间步数转换为动作时间步数，因为每个动作会被重复执行多次
         until = self._until // self._action_repeat
-        return step < until
+        return step < until # 如果当前的动作时间步数小于设定的限制，则返回True，否则返回False
 
 
 class Every:
@@ -93,9 +101,9 @@ class Timer:
         self._last_time = time.time()
 
     def reset(self):
-        elapsed_time = time.time() - self._last_time
-        self._last_time = time.time()
-        total_time = time.time() - self._start_time
+        elapsed_time = time.time() - self._last_time # 记录从上次重置到现在的时间
+        self._last_time = time.time() # 更新上次重置的时间为当前时间
+        total_time = time.time() - self._start_time # 记录从计时器开始到现在的总时间
         return elapsed_time, total_time
 
     def total_time(self):

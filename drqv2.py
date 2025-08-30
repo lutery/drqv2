@@ -12,9 +12,13 @@ import utils
 
 
 class RandomShiftsAug(nn.Module):
+    '''
+    随机偏移裁剪
+    '''
+
     def __init__(self, pad):
         super().__init__()
-        self.pad = pad
+        self.pad = pad # 填充的像素数
 
     def forward(self, x):
         n, c, h, w = x.size()
@@ -52,23 +56,32 @@ class Encoder(nn.Module):
         assert len(obs_shape) == 3
         self.repr_dim = 32 * 35 * 35
 
-        self.convnet = nn.Sequential(nn.Conv2d(obs_shape[0], 32, 3, stride=2),
-                                     nn.ReLU(), nn.Conv2d(32, 32, 3, stride=1),
-                                     nn.ReLU(), nn.Conv2d(32, 32, 3, stride=1),
-                                     nn.ReLU(), nn.Conv2d(32, 32, 3, stride=1),
+        # 构建网络，结果采用的是每个just conv2d + relu
+        # 经过convnet后，图像尺寸将下降 一半
+        self.convnet = nn.Sequential(nn.Conv2d(obs_shape[0], 32, 3, stride=2), # 尺寸减半
+                                     nn.ReLU(), nn.Conv2d(32, 32, 3, stride=1), # 尺寸不变
+                                     nn.ReLU(), nn.Conv2d(32, 32, 3, stride=1), # 尺寸不变
+                                     nn.ReLU(), nn.Conv2d(32, 32, 3, stride=1), # 尺寸不变
                                      nn.ReLU())
 
         self.apply(utils.weight_init)
 
     def forward(self, obs):
-        obs = obs / 255.0 - 0.5
-        h = self.convnet(obs)
-        h = h.view(h.shape[0], -1)
+        obs = obs / 255.0 - 0.5 # 归一化到 [-0.5, 0.5]
+        h = self.convnet(obs) # [B, 32, 35, 35]
+        h = h.view(h.shape[0], -1) # 展平 [B, 32*35*35]
         return h
 
 
 class Actor(nn.Module):
     def __init__(self, repr_dim, action_shape, feature_dim, hidden_dim):
+        '''
+        repr_dim: 编码器输出的特征维度
+        action_shape: 动作空间的形状 (action_dim,)
+        feature_dim: 特征层的维度
+        hidden_dim: 隐藏层的维度
+        该类实现了 DrQ-v2 算法中的策略网络
+        '''
         super().__init__()
 
         self.trunk = nn.Sequential(nn.Linear(repr_dim, feature_dim),
@@ -86,20 +99,29 @@ class Actor(nn.Module):
         h = self.trunk(obs)
 
         mu = self.policy(h)
-        mu = torch.tanh(mu)
-        std = torch.ones_like(mu) * std
+        mu = torch.tanh(mu) # 预测动作的均值
+        std = torch.ones_like(mu) * std #todo 标准差是外面传进来的？
 
         dist = utils.TruncatedNormal(mu, std)
-        return dist
+        return dist # 返回截断正态分布
 
 
 class Critic(nn.Module):
     def __init__(self, repr_dim, action_shape, feature_dim, hidden_dim):
+        '''
+        repr_dim: 编码器输出的特征维度
+        action_shape: 动作空间的形状 (action_dim,)
+        feature_dim: 特征层的维度
+        hidden_dim: 隐藏层的维度
+
+        预测的是两个 Q 值
+        '''
         super().__init__()
 
         self.trunk = nn.Sequential(nn.Linear(repr_dim, feature_dim),
                                    nn.LayerNorm(feature_dim), nn.Tanh())
 
+        # 结合环境的特征和动作，输入到两个独立的Q网络中
         self.Q1 = nn.Sequential(
             nn.Linear(feature_dim + action_shape[0], hidden_dim),
             nn.ReLU(inplace=True), nn.Linear(hidden_dim, hidden_dim),
@@ -125,6 +147,28 @@ class DrQV2Agent:
     def __init__(self, obs_shape, action_shape, device, lr, feature_dim,
                  hidden_dim, critic_target_tau, num_expl_steps,
                  update_every_steps, stddev_schedule, stddev_clip, use_tb):
+        '''
+        obs_shape: 观察空间的形状 (C, H, W)
+        action_shape: 动作空间的形状 (action_dim,)
+        device: 计算设备 (CPU 或 GPU)
+        lr: 学习率
+        feature_dim: 编码器输出的特征维度
+        hidden_dim: 隐藏层的维度
+        critic_target_tau: 软更新目标网络的系数
+        num_expl_steps: 探索阶段的步数 todo
+        update_every_steps: 每隔多少步更新一次网络
+        stddev_schedule: 动作噪声的标准差调度 todo
+        stddev_clip: 动作噪声的裁剪范围
+        use_tb: 是否使用 TensorBoard 记录训练过程
+        该类实现了 DrQ-v2 强化学习算法的主体逻辑，包括网络的构建、动作选择、网络更新等功能
+        该类使用了数据增强技术来提高训练的稳定性和性能
+        该类包含了一个编码器、一个策略网络和一个双重 Q 网络
+        该类使用了目标网络来稳定 Q 值的估计
+        该类使用了 Adam 优化器来更新网络参数
+        该类支持在训练过程中记录各种指标，以便于分析和调试
+        该类可以在训练和评估模式之间切换
+        该类可以根据当前的训练步数动态调整动作噪声的标准
+        '''
         self.device = device
         self.critic_target_tau = critic_target_tau
         self.update_every_steps = update_every_steps
@@ -138,6 +182,7 @@ class DrQV2Agent:
         self.actor = Actor(self.encoder.repr_dim, action_shape, feature_dim,
                            hidden_dim).to(device)
 
+        # 构建价值网络和目标价值网络
         self.critic = Critic(self.encoder.repr_dim, action_shape, feature_dim,
                              hidden_dim).to(device)
         self.critic_target = Critic(self.encoder.repr_dim, action_shape,
@@ -149,7 +194,7 @@ class DrQV2Agent:
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
 
-        # data augmentation
+        # data augmentation 又是一个随机裁剪
         self.aug = RandomShiftsAug(pad=4)
 
         self.train()
