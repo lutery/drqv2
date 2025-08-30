@@ -25,12 +25,20 @@ class VideoRecorder:
 
     def init(self, env, enabled=True):
         self.frames = []
-        self.enabled = self.save_dir is not None and enabled
+        self.enabled = self.save_dir is not None and enabled # 如果没有存储目录，则不启用视频记录功能
         self.record(env)
 
     def record(self, env):
         if self.enabled:
             if hasattr(env, 'physics'):
+                # physics 是一个物理仿真引擎对象，通常指 MuJoCo 物理仿真器,如果是
+                # 物理仿真环境，使用 physics.render() 方法渲染图像，否则返回的估计也只是个向量
+                '''
+                physics 对象负责：
+                    物理仿真计算 - 处理物体运动、碰撞、重力等物理交互
+                    渲染功能 - 生成环境的可视化图像
+                    状态管理 - 维护仿真世界的当前状态
+                '''
                 frame = env.physics.render(height=self.render_size,
                                            width=self.render_size,
                                            camera_id=0)

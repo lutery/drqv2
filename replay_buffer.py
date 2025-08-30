@@ -124,76 +124,88 @@ class ReplayBuffer(IterableDataset):
         self._num_workers = max(1, num_workers)
         self._episode_fns = []
         self._episodes = dict()
-        self._nstep = nstep
+        self._nstep = nstep # 这个应该是多步DQN的作用
         self._discount = discount
         self._fetch_every = fetch_every
         self._samples_since_last_fetch = fetch_every
         self._save_snapshot = save_snapshot
 
     def _sample_episode(self):
+        '''
+        随机采样一个生命周期的数据（连续完整的从开始到结束）
+        '''
         eps_fn = random.choice(self._episode_fns)
         return self._episodes[eps_fn]
 
     def _store_episode(self, eps_fn):
         try:
-            episode = load_episode(eps_fn)
+            episode = load_episode(eps_fn) # 加载一个生命周期内的数据
         except:
             return False
-        eps_len = episode_len(episode)
+        eps_len = episode_len(episode) # 获取该生命周期内的步数
         while eps_len + self._size > self._max_size:
+            # 如果加载的数据超过了最大size，则清除旧的数据
             early_eps_fn = self._episode_fns.pop(0)
             early_eps = self._episodes.pop(early_eps_fn)
             self._size -= episode_len(early_eps)
-            early_eps_fn.unlink(missing_ok=True)
+            early_eps_fn.unlink(missing_ok=True) # 删除旧的采集数据
         self._episode_fns.append(eps_fn)
-        self._episode_fns.sort()
-        self._episodes[eps_fn] = episode
-        self._size += eps_len
+        self._episode_fns.sort() # 重新排序
+        self._episodes[eps_fn] = episode # 将数据加载进去
+        self._size += eps_len # 更新当前缓冲区的长度大小
 
         if not self._save_snapshot:
-            eps_fn.unlink(missing_ok=True)
+            eps_fn.unlink(missing_ok=True) # 如果加载过了，则删除该数据，如果保存快照则直接删除
         return True
 
     def _try_fetch(self):
+        '''
+        这里是常识从指定的目录加载数据
+        '''
         if self._samples_since_last_fetch < self._fetch_every:
+            # 还没到指定的加载周期则直接返回
             return
         self._samples_since_last_fetch = 0
         try:
             worker_id = torch.utils.data.get_worker_info().id
         except:
             worker_id = 0
-        eps_fns = sorted(self._replay_dir.glob('*.npz'), reverse=True)
-        fetched_size = 0
+        eps_fns = sorted(self._replay_dir.glob('*.npz'), reverse=True) # 列出所有的数据压缩包
+        fetched_size = 0 #已经加载的数据量
         for eps_fn in eps_fns:
             eps_idx, eps_len = [int(x) for x in eps_fn.stem.split('_')[1:]]
             if eps_idx % self._num_workers != worker_id:
+                # 因为是多线程采集，所以如果不能被当前现场整除的代表是其他进程处理的包
                 continue
             if eps_fn in self._episodes.keys():
+                # todo 这里大概是为了保证不重复加载
                 break
             if fetched_size + eps_len > self._max_size:
+                # 如果超过了每次加载的最大容量则直接跳出
                 break
             fetched_size += eps_len
-            if not self._store_episode(eps_fn):
+            if not self._store_episode(eps_fn): # 将数据加载到内存中
                 break
 
     def _sample(self):
+        # 看起来这边的采样数据不是连续的，而是随机的一个单点样本
         try:
             self._try_fetch()
         except:
             traceback.print_exc()
-        self._samples_since_last_fetch += 1
-        episode = self._sample_episode()
+        self._samples_since_last_fetch += 1 # 统计采集的次数
+        episode = self._sample_episode() # 采样一个生命周期的数据
         # add +1 for the first dummy transition
-        idx = np.random.randint(0, episode_len(episode) - self._nstep + 1) + 1
+        idx = np.random.randint(0, episode_len(episode) - self._nstep + 1) + 1 # 随机选择一个位置
         obs = episode['observation'][idx - 1]
         action = episode['action'][idx]
-        next_obs = episode['observation'][idx + self._nstep - 1]
+        next_obs = episode['observation'][idx + self._nstep - 1] # 获取多步dqn n步后的状态
         reward = np.zeros_like(episode['reward'][idx])
         discount = np.ones_like(episode['discount'][idx])
         for i in range(self._nstep):
             step_reward = episode['reward'][idx + i]
-            reward += discount * step_reward
-            discount *= episode['discount'][idx + i] * self._discount
+            reward += discount * step_reward # 将n步之间的所有奖励按照折扣相加
+            discount *= episode['discount'][idx + i] * self._discount # 计算每步的折扣比例
         return (obs, action, reward, discount, next_obs)
 
     def __iter__(self):

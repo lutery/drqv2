@@ -77,7 +77,7 @@ class Workspace:
             self.cfg.save_snapshot, self.cfg.nstep, self.cfg.discount)
         self._replay_iter = None
 
-        # 构建视频记录器
+        # 构建视频记录器，记录验证时的视频
         self.video_recorder = VideoRecorder(
             self.work_dir if self.cfg.save_video else None)
         # 记录训练过程中的视频
@@ -113,14 +113,14 @@ class Workspace:
 
         while eval_until_episode(episode):
             time_step = self.eval_env.reset()
-            self.video_recorder.init(self.eval_env, enabled=(episode == 0))
+            self.video_recorder.init(self.eval_env, enabled=(episode == 0)) # 记录第一帧
             while not time_step.last():
                 with torch.no_grad(), utils.eval_mode(self.agent):
                     action = self.agent.act(time_step.observation,
                                             self.global_step,
                                             eval_mode=True)
-                time_step = self.eval_env.step(action)
-                self.video_recorder.record(self.eval_env)
+                time_step = self.eval_env.step(action) # 执行动作
+                self.video_recorder.record(self.eval_env) # 将当前帧渲染为图像，添加到视频中
                 total_reward += time_step.reward
                 step += 1
 
@@ -128,10 +128,10 @@ class Workspace:
             self.video_recorder.save(f'{self.global_frame}.mp4')
 
         with self.logger.log_and_dump_ctx(self.global_frame, ty='eval') as log:
-            log('episode_reward', total_reward / episode)
-            log('episode_length', step * self.cfg.action_repeat / episode)
-            log('episode', self.global_episode)
-            log('step', self.global_step)
+            log('episode_reward', total_reward / episode) # 验证过程中每个游戏过程的平均奖励
+            log('episode_length', step * self.cfg.action_repeat / episode) # 验证过程中每个游戏过程的平均帧数
+            log('episode', self.global_episode) # 训练了多少个完整的游戏过程
+            log('step', self.global_step) # 训练了多少个动作
 
     def train(self):
         '''
@@ -140,7 +140,7 @@ class Workspace:
         # predicates todo 这是做啥的？
         train_until_step = utils.Until(self.cfg.num_train_frames, # 总训练帧数 作用: 控制整个训练过程的总长度
                                        self.cfg.action_repeat)
-        seed_until_step = utils.Until(self.cfg.num_seed_frames, # 随机探索帧数 作用: 在训练初期进行纯随机探索，收集初始经验
+        seed_until_step = utils.Until(self.cfg.num_seed_frames, # 随机探索帧数 作用: 在训练初期进行纯随机探索，收集初始经验，只有超过这个帧数才开始更新网络
                                       self.cfg.action_repeat)
         eval_every_step = utils.Every(self.cfg.eval_every_frames, # 评估频率 作用: 控制多久进行一次模型评估
                                       self.cfg.action_repeat)
@@ -195,18 +195,19 @@ class Workspace:
             with torch.no_grad(), utils.eval_mode(self.agent):
                 action = self.agent.act(time_step.observation,
                                         self.global_step,
-                                        eval_mode=False)
+                                        eval_mode=False) # 预测动作
 
             # try to update the agent
             if not seed_until_step(self.global_step):
+                # 只有超过 seed 阶段才开始网络更新
                 metrics = self.agent.update(self.replay_iter, self.global_step)
                 self.logger.log_metrics(metrics, self.global_frame, ty='train')
 
             # take env step
-            time_step = self.train_env.step(action)
-            episode_reward += time_step.reward
-            self.replay_storage.add(time_step)
-            self.train_video_recorder.record(time_step.observation)
+            time_step = self.train_env.step(action) # 执行动作，获得下一个时间步
+            episode_reward += time_step.reward # 记录当前游戏过程的总奖励
+            self.replay_storage.add(time_step) # 将当前时间步添加到重放缓冲区
+            self.train_video_recorder.record(time_step.observation) # 记录当前帧
             episode_step += 1
             self._global_step += 1
 
